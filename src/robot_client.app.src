@@ -1,0 +1,10 @@
+{application, robot_client,
+	[{description, "服务器压力测试机器人客户端"},
+		{vsn, "1.0"},
+		{modules, [chat_room_app, chat_room_sup, channel,
+			channel_manager, chat_websocket_handler, database_queryer]},
+		{registered,[chat_room_sup, database_queryer, channel_manager]},
+		{applications, [kernel,stdlib,jsx]},
+		{mod, {chat_room_app,[]}},
+		{start_phases, []}
+	]}.

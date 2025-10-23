@@ -1,0 +1,14 @@
+# 默认忽略的文件
+/shelf/
+/workspace.xml
+
+build/
+
+ebin/*.beam
+**/ebin/*.beam
+*.beam
+
+
+# 忽略临时文件
+*.log
+*.crashdump
