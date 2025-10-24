@@ -1,4 +1,4 @@
-PROJECT = chat_room
+PROJECT = robot_client
 REBAR = rebar3
 EBIN = _build/default/lib/$(PROJECT)/ebin
 

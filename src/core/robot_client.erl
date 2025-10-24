@@ -28,8 +28,7 @@ stop() ->
 	gen_server:cast(?MODULE, stop).
 
 init([Number, Host, Port]) ->
-	io:format("=== 机器人压力测试客户端启动 ===~n"),
-	io:format("目标服务器: ~s:~p~n", [Host, Port]),
+	io:format("=== 使用机器人压力测试服务端 ===~n"),
 	io:format("机器人数量: ~p~n", [Number]),
 	
 	%% 读取随机消息文件

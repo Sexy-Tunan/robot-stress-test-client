@@ -11,15 +11,15 @@
 -module(robot).
 -author("caigou").
 
--include("../../../include/geography.hrl").
--include("../../../include/chat_protocol.hrl").
+-include("../../include/geography.hrl").
+-include("../../include/chat_protocol.hrl").
 
 %% API
 -export([start/3]).
 
 -define(WORLD_CHANNEL, <<"world">>).
--define(CHAT_INTERVAL, 60000).    %% 60秒 = 60000毫秒
--define(MOVE_INTERVAL, 2000).     %% 2秒 = 2000毫秒
+-define(CHAT_INTERVAL, 20000).
+-define(MOVE_INTERVAL, 2000).
 
 %% 启动机器人
 %% Socket: TCP连接
@@ -27,34 +27,40 @@
 %% MessageList: 随机消息列表
 start(Socket, RobotId, MessageList) ->
 	process_flag(trap_exit, true),
-	UserName = list_to_binary(io_lib:format("Robot~4..0B", [RobotId])),
+	UserName = unicode:characters_to_binary(io_lib:format("Robot~4..0B", [RobotId]),utf8,utf8),
 	Password = <<"123456">>,
-	
-	%% 登录
-	case login(Socket, UserName, Password) of
+
+	%% 发送登录消息包，然后进入循环
+	build_login_packet_and_send(Socket, UserName, Password),
+	loop(#{robot_id => RobotId, user_name => UserName, socket => Socket, message_list => MessageList}).
+
+
+%% 登录函数
+build_login_packet_and_send(Socket, UserName, Password) ->
+	PayloadMap = #{userName => UserName, password => Password},
+	PayloadJsonBin = jsx:encode(PayloadMap),
+	Packet = <<?LOGIN_REQUEST_PROTOCOL_NUMBER:16/big-unsigned-integer, PayloadJsonBin/binary>>,
+	case gen_tcp:send(Socket, Packet) of
 		ok ->
-			io:format("[~ts] 登录成功~n", [UserName]),
-			%% 初始化状态
-			State = #{
-				socket => Socket,
-				user_name => UserName,
-				robot_id => RobotId,
-				message_list => MessageList,
-				last_chat_time => 0,
-				last_move_time => 0
-			},
-			io:format("[~ts] 初始位置: (~p, ~p)~n", [UserName, maps:get(current_x, State), maps:get(current_y, State)]),
-			
-			%% 开始定时器
-			erlang:send_after(?CHAT_INTERVAL, self(), chat_tick),
-			erlang:send_after(?MOVE_INTERVAL, self(), move_tick),
-			
-			%% 进入循环
-			loop(State);
+			inet:setopts(Socket, [{active, once}]), ok;
 		{error, Reason} ->
-			io:format("[Robot~4..0B] 登录失败: ~p~n", [RobotId, Reason]),
-			gen_tcp:close(Socket)
+			{error, Reason}
 	end.
+
+
+build_map_packet_send(Socket, ChannelName) ->
+	%% 构造消息包
+	PayloadMap = #{
+		channel => ChannelName
+	},
+	PayloadJsonBin = jsx:encode(PayloadMap),
+	Packet = <<?MAP_REQUEST_PROTOCOL_NUMBER:16/big-unsigned-integer, PayloadJsonBin/binary>>,
+	case gen_tcp:send(Socket, Packet) of
+		ok -> ok;
+		{error, Reason} ->
+			{error, Reason}
+	end.
+
 
 %% 主循环
 loop(State) ->
@@ -73,10 +79,17 @@ loop(State) ->
 		
 		%% 接收服务器消息
 		{tcp, Socket, <<ProtoId:16, JsonBin/binary>>} ->
-			handle_server_message(ProtoId, JsonBin, State),
-			inet:setopts(Socket, [{active, once}]),
-			loop(State);
-		
+			case handle_server_message(ProtoId, JsonBin, State, Socket) of
+				{ok,NewState} ->
+					inet:setopts(Socket, [{active, once}]),
+					loop(NewState);
+				{error,Reason, NewState} ->
+					io:format("错误信息[~ts]~n", [Reason]),
+					inet:setopts(Socket, [{active, once}]),
+					loop(NewState)
+			end;
+
+
 		%% TCP连接关闭
 		{tcp_closed, _Socket} ->
 			io:format("[~ts] 连接已关闭~n", [maps:get(user_name, State)]),
@@ -92,6 +105,75 @@ loop(State) ->
 			loop(State)
 	end.
 
+%% 处理服务器消息
+%% {ok,NewState} | {error,Reason,NewState}
+handle_server_message(ProtoId, JsonBin, State, Socket) ->
+
+	DataMap = jsx:decode(JsonBin, [return_maps, {labels, atom}]),
+	case ProtoId of
+		%% 登录响应
+		?LOGIN_RESPONSE_PROTOCOL_NUMBER ->
+			UserName = maps:get(user,DataMap),
+			case maps:get(state, DataMap, false) of
+				true ->
+					io:format("[~ts] 登录成功~n", [UserName]),
+					build_map_packet_send(Socket, <<"world">>),
+					{ok, State#{user_name => UserName}};
+
+				false ->
+					io:format("[~ts] 登录失败: ~ts~n", [UserName, maps:get(reason, DataMap, <<"未知错误">>)]),
+					{error, maps:get(reason, DataMap, <<"未知错误">>), State}
+			end;
+
+		%% 地图响应
+		?MAP_RESPONSE_PROTOCOL_NUMBER ->
+			UserName = maps:get(user_name, State),
+			%% 初始化状态
+			case maps:get(state, DataMap, false) of
+				true ->
+					WorldMap = {maps:get(channel, DataMap), maps:get(width, DataMap), maps:get(height, DataMap)},
+
+					%% 将经常修改的position变量存进程字典
+					put(current_x,50),
+					put(current_y,50),
+					io:format("[~ts] 初始位置: (~p, ~p)~n", [UserName, get(current_x), get(current_y)]),
+
+					%% 开始定时器
+					erlang:send_after(?CHAT_INTERVAL, self(), chat_tick),
+					erlang:send_after(?MOVE_INTERVAL, self(), move_tick),
+					{ok, State#{current_map => WorldMap}};
+				false ->
+					io:format("[~ts]获取地图失败--原因: ~ts~n", [UserName, maps:get(reason, DataMap, <<"未知错误">>)]),
+					{error, maps:get(reason, DataMap, <<"未知错误">>)}
+			end;
+
+		%% 消息广播
+		?MSG_BROADCAST_PROTOCOL_NUMBER ->
+			UserName = maps:get(user_name, State),
+			Sender = maps:get(sender, DataMap),
+			Channel = maps:get(channel, DataMap),
+			Message = maps:get(message, DataMap),
+			io:format("[~ts] 收到消息 [~ts@~ts]: ~ts~n", [UserName, Sender, Channel, Message]),
+			{ok,State};
+
+		%% 移动广播
+		?MOVE_BROADCAST_PROTOCOL_NUMBER ->
+			UserName = maps:get(user_name, State),
+			User = maps:get(user, DataMap),
+			FromX = maps:get(from_x, DataMap),
+			FromY = maps:get(from_y, DataMap),
+			ToX = maps:get(to_x, DataMap),
+			ToY = maps:get(to_y, DataMap),
+			io:format("[~ts] 收到移动广播: ~ts 从(~p,~p)移动到(~p,~p)~n",
+				[UserName, User, FromX, FromY, ToX, ToY]),
+			{ok,State};
+
+		_Other ->
+			UserName = maps:get(user_name, State),
+			io:format("[~ts] 收到未知协议 ~p: ~p~n", [UserName, ProtoId, DataMap]),
+			{ok,State}
+	end.
+
 %% 处理聊天
 handle_chat(State) ->
 	Socket = maps:get(socket, State),
@@ -105,26 +187,31 @@ handle_chat(State) ->
 	PayloadMap = #{
 		sender => UserName,
 		channel => ?WORLD_CHANNEL,
-		message => list_to_binary(Message)
+		message => unicode:characters_to_binary(Message)
 	},
 	PayloadJsonBin = jsx:encode(PayloadMap),
 	Packet = <<?MSG_REQUEST_PROTOCOL_NUMBER:16/big-unsigned-integer, PayloadJsonBin/binary>>,
 	
 	gen_tcp:send(Socket, Packet),
 	io:format("[~ts] 发送消息: ~ts~n", [UserName, Message]),
-	
-	State#{last_chat_time => erlang:system_time(second)}.
+	%% 本地不记录最新一次移动时间和发言时间
+%%	State#{last_chat_time => erlang:system_time(second)}.
+	State.
+
 
 %% 处理移动
 handle_move(State) ->
 	Socket = maps:get(socket, State),
 	UserName = maps:get(user_name, State),
-	CurrentX = maps:get(current_x, State),
-	CurrentY = maps:get(current_y, State),
-	
+%%	CurrentX = maps:get(current_x, State),
+%%	CurrentY = maps:get(current_y, State),
+ 	CurrentX = get(current_x),
+	CurrentY = get(current_y),
+
+	{ChannelName, Width, Height} = maps:get(current_map, State),
 	%% 随机选择方向并计算新位置
 	Direction = lists:nth(rand:uniform(4), [up, down, left, right]),
-	{NewX, NewY} = calculate_new_position(CurrentX, CurrentY, Direction),
+	{NewX, NewY} = calculate_new_position(CurrentX, CurrentY, Direction, Width, Height),
 	
 	%% 构造移动包
 	PayloadMap = #{
@@ -139,83 +226,38 @@ handle_move(State) ->
 	Packet = <<?MOVE_REQUEST_PROTOCOL_NUMBER:16/big-unsigned-integer, PayloadJsonBin/binary>>,
 	
 	gen_tcp:send(Socket, Packet),
-	io:format("[~ts] 从格子(~p,~p)移动到格子(~p,~p)~n", [UserName, CurrentX, CurrentY, NewX, NewY]),
-	
-	State#{
-		current_x => NewX,
-		current_y => NewY,
-		last_move_time => erlang:system_time(second)
-	}.
+%%	io:format("[~ts] 从格子(~p,~p)移动到格子(~p,~p)~n", [UserName, CurrentX, CurrentY, NewX, NewY]),
+	put(current_x, NewX),
+	put(current_y, NewY),
+	State.
+%%	State#{
+%%		current_x => NewX,
+%%		current_y => NewY,
+%%	}.
 
-%% 计算新位置（确保不超出地图边界）
-calculate_new_position(X, Y, up) ->
-	{X, min(Y + 1, ?MAP_HEIGHT - 1)};
-calculate_new_position(X, Y, down) ->
-	{X, max(Y - 1, 0)};
-calculate_new_position(X, Y, left) ->
-	{max(X - 1, 0), Y};
-calculate_new_position(X, Y, right) ->
-	{min(X + 1, ?MAP_WIDTH - 1), Y}.
 
-%% 处理服务器消息
-handle_server_message(ProtoId, JsonBin, State) ->
-	UserName = maps:get(user_name, State),
-	DataMap = jsx:decode(JsonBin, [return_maps, {labels, atom}]),
-	
-	case ProtoId of
-		%% 登录响应
-		?LOGIN_RESPONSE_PROTOCOL_NUMBER ->
-			case maps:get(state, DataMap, false) of
-				true ->
-					io:format("[~ts] 收到登录成功响应~n", [UserName]);
-				false ->
-					Reason = maps:get(reason, DataMap, <<"未知原因">>),
-					io:format("[~ts] 登录失败: ~ts~n", [UserName, Reason])
-			end;
-
-		%% 消息广播
-		?MSG_BROADCAST_PROTOCOL_NUMBER ->
-			Sender = maps:get(sender, DataMap),
-			Channel = maps:get(channel, DataMap),
-			Message = maps:get(message, DataMap),
-			io:format("[~ts] 收到消息 [~ts@~ts]: ~ts~n", [UserName, Sender, Channel, Message]);
-
-		%% 移动广播
-		?MOVE_BROADCAST_PROTOCOL_NUMBER ->
-			User = maps:get(user, DataMap),
-			FromX = maps:get(from_x, DataMap),
-			FromY = maps:get(from_y, DataMap),
-			ToX = maps:get(to_x, DataMap),
-			ToY = maps:get(to_y, DataMap),
-			io:format("[~ts] 收到移动广播: ~ts 从(~p,~p)移动到(~p,~p)~n", 
-				[UserName, User, FromX, FromY, ToX, ToY]);
-		
-		_Other ->
-			io:format("[~ts] 收到未知协议 ~p: ~p~n", [UserName, ProtoId, DataMap])
+%% 计算新位置（确保不超出地图边界）,碰到边界按前进的相反方向后退一步
+calculate_new_position(X, Y, up, MaxX, MaxY) ->
+	case Y+1 > MaxY of
+		true -> {X, Y - 1};
+		false -> {X, Y + 1}
+	end;
+calculate_new_position(X, Y, down, MaxX, MaxY) ->
+	case Y-1 < 0 of
+		true -> {X, Y+1};
+		false -> {X, Y-1}
+	end;
+calculate_new_position(X, Y, left, MaxX, MaxY) ->
+	case X-1 < 0 of
+		true -> {X+1, Y};
+		false -> {X-1, Y}
+	end;
+calculate_new_position(X, Y, right, MaxX, MaxY) ->
+	case X+1 > MaxX of
+		true -> {X-1, Y};
+		false -> {X+1, Y}
 	end.
 
-%% 登录函数
-login(Socket, UserName, Password) ->
-	PayloadMap = #{userName => UserName, password => Password},
-	PayloadJsonBin = jsx:encode(PayloadMap),
-	Packet = <<10001:16/big-unsigned-integer, PayloadJsonBin/binary>>,
-	
-	case gen_tcp:send(Socket, Packet) of
-		ok ->
-			inet:setopts(Socket, [{active, once}]),
-			%% 等待登录响应
-			receive
-				{tcp, Socket, <<?LOGIN_RESPONSE_PROTOCOL_NUMBER:16, JsonBin/binary>>} ->
-					ResponseMap = jsx:decode(JsonBin, [return_maps, {labels, atom}]),
-					case maps:get(state, ResponseMap, false) of
-						true -> ok;
-						false -> {error, maps:get(reason, ResponseMap, <<"未知错误">>)}
-					end;
-				{tcp_closed, _} ->
-					{error, connection_closed}
-			after 5000 ->
-				{error, login_timeout}
-			end;
-		{error, Reason} ->
-			{error, Reason}
-	end.
+
+
+

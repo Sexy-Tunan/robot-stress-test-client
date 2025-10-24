@@ -5,11 +5,10 @@
 -module(start_robots).
 -export([start/0, start/1, start/3]).
 
-%% 使用默认参数启动
+%% 默认启动200个机器人链接服务器
 start() ->
 	start(200).
 
-%% 指定机器人数量启动 (连接本地服务器8080端口)
 start(Number) ->
 	start(Number, "172.22.2.101", 10086).
 
