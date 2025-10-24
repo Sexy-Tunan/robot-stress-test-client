@@ -12,3 +12,8 @@ ebin/*.beam
 # 忽略临时文件
 *.log
 *.crashdump
+
+.idea/misc.xml
+.idea/modules.xml.xml
+.idea/vcs.xml
+.idea/workspace.xml.xml
