@@ -14,6 +14,6 @@ ebin/*.beam
 *.crashdump
 
 .idea/misc.xml
-.idea/modules.xml.xml
+.idea/modules.xml
 .idea/vcs.xml
-.idea/workspace.xml.xml
+.idea/workspace.xml
