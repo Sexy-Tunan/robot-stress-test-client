@@ -59,6 +59,7 @@ start_robots(Number, Host, Port, MessageList, PidList) ->
 					%% 继续启动下一个机器人
 					start_robots(Number - 1, Host, Port, MessageList, [Pid | PidList]);
 				{error, Reason} ->
+
 					io:format("机器人~4..0B 移交控制权失败: ~p~n", [RobotId, Reason]),
 					Pid ! stop,
 					gen_tcp:close(Socket),
