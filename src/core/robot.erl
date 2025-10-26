@@ -76,7 +76,7 @@ loop(State) ->
 			NewState = handle_move(State),
 			erlang:send_after(?MOVE_INTERVAL, self(), move_tick),
 			loop(NewState);
-		
+
 		%% 接收服务器消息
 		{tcp, Socket, <<ProtoId:16, JsonBin/binary>>} ->
 			case handle_server_message(ProtoId, JsonBin, State, Socket) of
@@ -100,7 +100,7 @@ loop(State) ->
 			io:format("[~ts] 收到停止信号~n", [maps:get(user_name, State)]),
 			gen_tcp:close(maps:get(socket, State)),
 			ok;
-		
+
 		_Other ->
 			loop(State)
 	end.
@@ -142,35 +142,47 @@ handle_server_message(ProtoId, JsonBin, State, Socket) ->
 					erlang:send_after(?CHAT_INTERVAL, self(), chat_tick),
 					erlang:send_after(?MOVE_INTERVAL, self(), move_tick),
 					{ok, State#{current_map => WorldMap}};
-				false ->
-					io:format("[~ts]获取地图失败--原因: ~ts~n", [UserName, maps:get(reason, DataMap, <<"未知错误">>)]),
-					{error, maps:get(reason, DataMap, <<"未知错误">>)}
-			end;
+		false ->
+			io:format("[~ts]获取地图失败--原因: ~ts~n", [UserName, maps:get(reason, DataMap, <<"未知错误">>)]),
+			{error, maps:get(reason, DataMap, <<"未知错误">>), State}
+	end;
 
-		%% 消息广播
-		?MSG_BROADCAST_PROTOCOL_NUMBER ->
-			UserName = maps:get(user_name, State),
-			Sender = maps:get(sender, DataMap),
-			Channel = maps:get(channel, DataMap),
-			Message = maps:get(message, DataMap),
-			io:format("[~ts] 收到消息 [~ts@~ts]: ~ts~n", [UserName, Sender, Channel, Message]),
-			{ok,State};
+	%% 消息广播
+	?MSG_BROADCAST_PROTOCOL_NUMBER ->
+		UserName = maps:get(user_name, State),
+		Sender = maps:get(sender, DataMap),
+		%% 优化输出：只输出自己的消息广播，避免大量输出（压测时200个机器人会产生海量消息）
+		case Sender =:= UserName of
+			true ->
+				Channel = maps:get(channel, DataMap),
+				Message = maps:get(message, DataMap),
+				io:format("[~ts] 消息发送成功 [@~ts]: ~ts~n", [UserName, Channel, Message]);
+			false ->
+				ok  %% 不输出其他机器人的消息，减少输出量
+		end,
+		{ok,State};
 
-		%% 移动广播
-		?MOVE_BROADCAST_PROTOCOL_NUMBER ->
-			UserName = maps:get(user_name, State),
-			User = maps:get(user, DataMap),
-			FromX = maps:get(from_x, DataMap),
-			FromY = maps:get(from_y, DataMap),
-			ToX = maps:get(to_x, DataMap),
-			ToY = maps:get(to_y, DataMap),
-			io:format("[~ts] 收到移动广播: ~ts 从(~p,~p)移动到(~p,~p)~n",
-				[UserName, User, FromX, FromY, ToX, ToY]),
-			{ok,State};
+	%% 移动广播
+	?MOVE_BROADCAST_PROTOCOL_NUMBER ->
+		UserName = maps:get(user_name, State),
+		User = maps:get(user, DataMap),
+		%% 优化输出：只输出自己的移动广播，避免大量输出（不输出其他机器人的移动，减少输出量，但本质上并没有减少进程的消息队列消息，只是尝试减少 erl shell控制台输出是否有助于消息快速处理）
+		case User =:= UserName of
+			true ->
+				FromX = maps:get(from_x, DataMap),
+				FromY = maps:get(from_y, DataMap),
+				ToX = maps:get(to_x, DataMap),
+				ToY = maps:get(to_y, DataMap),
+				io:format("[~ts] 移动成功: 从(~p,~p)移动到(~p,~p)~n",
+					[UserName, FromX, FromY, ToX, ToY]);
+			false ->
+				ok
+		end,
+		{ok,State};
 
 		_Other ->
-			UserName = maps:get(user_name, State),
-			io:format("[~ts] 收到未知协议 ~p: ~p~n", [UserName, ProtoId, DataMap]),
+%%			UserName = maps:get(user_name, State),
+%%			io:format("[~ts] 收到未知协议 ~p: ~p~n", [UserName, ProtoId, DataMap]),
 			{ok,State}
 	end.
 
@@ -193,9 +205,7 @@ handle_chat(State) ->
 	Packet = <<?MSG_REQUEST_PROTOCOL_NUMBER:16/big-unsigned-integer, PayloadJsonBin/binary>>,
 	
 	gen_tcp:send(Socket, Packet),
-	io:format("[~ts] 发送消息: ~ts~n", [UserName, Message]),
-	%% 本地不记录最新一次移动时间和发言时间
-%%	State#{last_chat_time => erlang:system_time(second)}.
+	%% 不在此处输出，等收到服务器广播后再输出，避免重复
 	State.
 
 
@@ -226,7 +236,6 @@ handle_move(State) ->
 	Packet = <<?MOVE_REQUEST_PROTOCOL_NUMBER:16/big-unsigned-integer, PayloadJsonBin/binary>>,
 	
 	gen_tcp:send(Socket, Packet),
-%%	io:format("[~ts] 从格子(~p,~p)移动到格子(~p,~p)~n", [UserName, CurrentX, CurrentY, NewX, NewY]),
 	put(current_x, NewX),
 	put(current_y, NewY),
 	State.
