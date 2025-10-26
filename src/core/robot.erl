@@ -26,13 +26,18 @@
 %% RobotId: 机器人ID (用于生成用户名)
 %% MessageList: 随机消息列表
 start(Socket, RobotId, MessageList) ->
-	process_flag(trap_exit, true),
-	UserName = unicode:characters_to_binary(io_lib:format("Robot~4..0B", [RobotId]),utf8,utf8),
-	Password = <<"123456">>,
+	receive
+		start ->
+			process_flag(trap_exit, true),
+			UserName = unicode:characters_to_binary(io_lib:format("Robot~4..0B", [RobotId]),utf8,utf8),
+			Password = <<"123456">>,
+			%% 发送登录消息包，然后进入循环
+			build_login_packet_and_send(Socket, UserName, Password),
+			loop(#{robot_id => RobotId, user_name => UserName, socket => Socket, message_list => MessageList});
+		_ ->
+			start(Socket, RobotId, MessageList)
+	end.
 
-	%% 发送登录消息包，然后进入循环
-	build_login_packet_and_send(Socket, UserName, Password),
-	loop(#{robot_id => RobotId, user_name => UserName, socket => Socket, message_list => MessageList}).
 
 
 %% 登录函数
@@ -77,18 +82,18 @@ loop(State) ->
 			erlang:send_after(?MOVE_INTERVAL, self(), move_tick),
 			loop(NewState);
 
-		%% 接收服务器消息
-		{tcp, Socket, <<ProtoId:16, JsonBin/binary>>} ->
-			case handle_server_message(ProtoId, JsonBin, State, Socket) of
-				{ok,NewState} ->
-					inet:setopts(Socket, [{active, once}]),
-					loop(NewState);
-				{error,Reason, NewState} ->
-					io:format("错误信息[~ts]~n", [Reason]),
-					inet:setopts(Socket, [{active, once}]),
-					loop(NewState)
-			end;
-
+			%% 接收服务器消息
+			{tcp, Socket, <<ProtoId:16, JsonBin/binary>>} ->
+				case handle_server_message(ProtoId, JsonBin, State, Socket) of
+					{ok,NewState} ->
+						inet:setopts(Socket, [{active, once}]),
+						loop(NewState);
+					{error,Reason, NewState} ->
+						io:format("错误信息[~ts]~n", [Reason]),
+						inet:setopts(Socket, [{active, once}]),
+						loop(NewState)
+				end;
+			
 
 		%% TCP连接关闭
 		{tcp_closed, _Socket} ->
@@ -101,8 +106,8 @@ loop(State) ->
 			gen_tcp:close(maps:get(socket, State)),
 			ok;
 
-		_Other ->
-			loop(State)
+			_Other ->
+				loop(State)
 	end.
 
 %% 处理服务器消息
@@ -162,7 +167,7 @@ handle_server_message(ProtoId, JsonBin, State, Socket) ->
 		end,
 		{ok,State};
 
-	%% 移动广播
+	%% 移动广播  
 	?MOVE_BROADCAST_PROTOCOL_NUMBER ->
 		UserName = maps:get(user_name, State),
 		User = maps:get(user, DataMap),
