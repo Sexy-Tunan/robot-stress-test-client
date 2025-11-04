@@ -20,9 +20,6 @@ run(Type) ->
 	NewType = change_type(Type),
 	A = trans(NewType),  %% 这里会失败：如果Type=1，则A=1但trans(NewType)=2
 	test1(Type),
-	test2(Type),
-	test3(Type),
-	test4(Type),
 	ok.
 
 test1(Type) ->
@@ -33,45 +30,45 @@ test1(Type) ->
 		2 -> B = Type
  	end.
 
-test3(Type) ->
-	case Type of
-		1 -> A = Type;
-		2 -> A = Type
-	end,
-	A.
-
-test4(Type) ->
-	case Type of
-		1 -> A = Type;
-		2 -> A = Type
-	end,
-	A = Type +1.
-
-test5(Type) ->
-	if
-		Type > 0 -> A = Type;
-		Type < 0 -> A = Type+1;
-		true -> A = -1
-	end,
-	A.
-
-test6(Type) ->
-	if
-		Type > 0 ->
-			A = Type,
-			A = Type+1;
-		Type < 0 -> A = Type+2;
-		true -> A = -1
-	end,
-	A.
-
-test7(Type) ->
-	receive
-		{a} -> A = Type;
-		{b} -> A = Type+1;
-		{c} -> A = Type+2
-	end,
-	A = Type + 3.
+%%test3(Type) ->
+%%	case Type of
+%%		1 -> A = Type;
+%%		2 -> A = Type
+%%	end,
+%%	A.
+%%
+%%test4(Type) ->
+%%	case Type of
+%%		1 -> A = Type;
+%%		2 -> A = Type
+%%	end,
+%%	A = Type +1.
+%%
+%%test5(Type) ->
+%%	if
+%%		Type > 0 -> A = Type;
+%%		Type < 0 -> A = Type+1;
+%%		true -> A = -1
+%%	end,
+%%	A.
+%%
+%%test6(Type) ->
+%%	if
+%%		Type > 0 ->
+%%			A = Type,
+%%			A = Type+1;
+%%		Type < 0 -> A = Type+2;
+%%		true -> A = -1
+%%	end,
+%%	A.
+%%
+%%test7(Type) ->
+%%	receive
+%%		{a} -> A = Type;
+%%		{b} -> A = Type+1;
+%%		{c} -> A = Type+2
+%%	end,
+%%	A = Type + 3.
 
 
 -spec trans(1) -> 1;
@@ -119,8 +116,7 @@ get_data_info(RoleID, Type) ->
 					end;
 				_ ->
 					NewInfo = Info
-			end,
-			NewInfo = Info;
+			end;
 		?TYPE_WEEK -> %%每周奖励
 			case Info of
 				#r_role_online_info{type = Type, reset_date = OldResetDate} when OldResetDate =/= 0, ResetDate =/= OldResetDate ->
@@ -135,3 +131,53 @@ get_data_info(RoleID, Type) ->
 	NewInfo2 = NewInfo#r_role_online_info{reset_date = ResetDate, op_date = Today},
 	Info =/= NewInfo2 andalso set_data_info(RoleID, Type, NewInfo2),
 	{ok, NewInfo2}.
+
+do_chat_private1(DataIn, GoodsList, RouterType, ChatState) ->
+	#chat_role_state{role_id = RoleID, gateway_pid = PID} = ChatState,
+	#m_chat_channel_tos{
+		to_role_id = ToRoleID,
+		msg = Msg
+	} = DataIn,
+	IsShowGoods = (RouterType =:= chat_show_goods),
+	IsShield = is_chat_shield(RoleID, DataIn),
+	IsCross = mod_chat_misc:is_in_cross(ChatState),
+	case catch mod_chat_verify:check_private(RoleID, ToRoleID, Msg, IsShowGoods, IsCross, ChatState) of
+		ok ->
+			{ok, FromRoleChatInfo} = mod_chat_misc:get_chat_role_info(?CHANNEL_TYPE_PAIRS, RoleID),
+			if
+				IsCross =:= true ->
+					NewState = mod_chat_misc:set_chat_time(?CHANNEL_TYPE_PAIRS, ChatState);
+				true ->
+					case mod_role_friend:is_friend(RoleID, ToRoleID) andalso mod_chat_misc:get_chat_role_info(?CHANNEL_TYPE_PAIRS, ToRoleID) of
+						{ok, ToRoleChatInfo} ->
+							IsSendToRole = not IsShield,
+							do_chat_private2(RoleID, DataIn, GoodsList, FromRoleChatInfo, ToRoleChatInfo, IsSendToRole, PID),
+							NewState = mod_chat_misc:set_chat_time(?CHANNEL_TYPE_PAIRS, ChatState),
+							%%jgrl_role:run(RoleID, fun() -> mod_role_limit:add_limit_times(RoleID, ?LIMIT_TYPE_1) end),
+							mod_chat_logger:log_private(FromRoleChatInfo, ToRoleChatInfo, Msg, IsShield);
+						_ ->
+							case mod_chat_misc:get_chat_cross_friend_info(RoleID, ToRoleID) of
+								{ok, ToRoleChatInfo} ->
+									IsSendToRole = not IsShield,
+									case mod_role_friend:is_open_cross_chat(RoleID) of
+										?TRUE ->
+											do_chat_cross_private(RoleID, DataIn, GoodsList, FromRoleChatInfo, ToRoleChatInfo, IsSendToRole, PID),
+											NewState = mod_chat_misc:set_chat_time(?CHANNEL_TYPE_PAIRS, ChatState),
+											mod_chat_logger:log_private(FromRoleChatInfo, ToRoleChatInfo, Msg, IsShield);
+										_ ->
+											NewState = ChatState,
+											NeedYueka = cfg_misc_config:cross_pvp_chat_need_yeuka_type(),
+											#cfg_fuli_yueka{name = Name} = cfg_fuli_yueka:find(NeedYueka),
+											?UNICAST_TOC(#m_common_error_toc{err_code = ?ERR_FRIEND_CROSS_CHAT_NEED_YUEKA,params = [Name]})
+									end;
+								_ ->
+									NewState = ChatState,
+									?UNICAST_TOC(#m_common_error_toc{err_code = ?ERR_FRIEND_NOT_SAME_FRIEND})
+							end
+					end
+			end;
+		#error{} = Error ->
+			is_pid(PID) andalso ?_common_error(Error),
+			NewState = ChatState
+	end,
+	NewState.
