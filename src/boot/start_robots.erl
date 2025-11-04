@@ -24,9 +24,9 @@ start(Number, Host, Port) ->
 			{error, Reason}
 	end.
 
-%% 停止所有机器人
-stop() ->
-	io:format("正在停止所有机器人...~n"),
-	robot_client:stop(),
-	io:format("已发送停止信号~n").
+%%%% 停止所有机器人
+%%stop() ->
+%%	io:format("正在停止所有机器人...~n"),
+%%	robot_client:stop(),
+%%	io:format("已发送停止信号~n").
 
