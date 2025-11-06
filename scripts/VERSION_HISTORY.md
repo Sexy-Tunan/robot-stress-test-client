@@ -1,5 +1,100 @@
 # Erlang变量重复赋值检测工具 - 版本历史
-## V12 (最新版本)
+## V13 (最新版本)
+
+### 核心改进
+
+支持跨行赋值检测：变量名和等号可以在不同行。
+
+### 问题描述
+
+**场景：**
+
+```erlang
+test3() ->
+    Score = 2,       % 第33行：第一次赋值
+    Score            % 第34行：变量名
+    = getNextScore(a),  % 第35行：等号和值在下一行
+    ok.
+```
+
+在Erlang中，允许将赋值语句换行，但V12版本无法检测这种跨行的重复赋值。
+
+### 解决方案
+
+#### 1. 添加跨行检测正则表达式
+
+```python
+# 检测以等号开头的行（跨行赋值的第二行）
+self.line_start_assign = re.compile(r'^\s*=\s*(?!=|:|/|<)')
+
+# 检测行末的变量（可能在下一行继续赋值）
+self.line_end_variable = re.compile(r'(?<!\$)\b([A-Z_][a-zA-Z0-9_]*)\s*$')
+```
+
+#### 2. 改进变量赋值检测
+
+在`get_assigned_variables`方法中添加`prev_line`参数：
+
+```python
+def get_assigned_variables(self, line: str, prev_line: Optional[str] = None) -> Set[str]:
+    """获取一行代码中被赋值的变量
+    
+    Args:
+        line: 当前行
+        prev_line: 上一行（用于检测跨行赋值）
+    """
+    # 如果当前行以 = 开头，检查上一行末尾是否有变量
+    if prev_line and self.line_start_assign.match(clean_line):
+        clean_prev = self.remove_comments_and_strings(prev_line)
+        match = self.line_end_variable.search(clean_prev)
+        if match:
+            var = match.group(1)
+            if var != '_' and not var.startswith('_'):
+                variables.add(var)
+                return variables
+    # ... 其他检测逻辑
+```
+
+#### 3. 在主循环中记录上一行
+
+```python
+# 记录上一行内容（用于跨行赋值检测）
+prev_line_content = None
+
+for line_num, line in lines:
+    # ... 处理逻辑
+    
+    # 传入上一行内容
+    assigned_vars = self.get_assigned_variables(line, prev_line_content)
+    
+    # 更新上一行内容
+    prev_line_content = line
+```
+
+
+
+### 跨行赋值的识别规则
+
+1. **当前行以`=`开头**（排除`==`、`=:=`等）
+2. **上一行末尾有变量**（大写字母或`_`开头）
+3. **变量不是匿名变量**（不是`_`或`_`开头）
+4. **变量前面不是`$`**（排除字符字面量）
+
+### 保持的功能
+
+- V12的所有功能：字符字面量正确处理
+- V11的所有功能：无emoji输出
+- V10的所有功能：匿名函数作用域、多子句fun支持
+- 正确区分case/if/receive分支的独立性
+
+### 测试结果
+
+✅ 跨行赋值能被正确检测  
+✅ 字符字面量（`$N`等）不误判  
+✅ 真实重复赋值仍能正确检测  
+✅ 保持V12的所有功能和修复
+
+## V12
 
 ### 核心改进
 修复字符字面量误判：正确识别`$N`、`$A`等不是变量赋值。
